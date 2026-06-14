@@ -1,0 +1,142 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.vscode/
+.idea/
+*.code-workspace
+
+# Vim / Emacs
+*~
+*.swp
+*.swo
+.#*
+
+# =========================
+# Logs / Temp
+# =========================
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+# =========================
+# Python cache / scripts
+# =========================
+__pycache__/
+*.py[cod]
+
+# =========================
+# CMake / Ninja / Make
+# =========================
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+Makefile
+cmake_install.cmake
+install_manifest.txt
+.ninja_deps
+.ninja_log
+*.ninja
+
+# =========================
+# Generic C/C++ build outputs
+# =========================
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.dll
+*.so
+*.so.*
+*.dylib
+*.exe
+*.out
+*.elf
+*.axf
+*.map
+*.hex
+*.bin
+*.srec
+*.lst
+*.list
+*.d
+*.dep
+
+# =========================
+# Keil MDK / uVision
+# =========================
+*.uvopt
+*.uvoptx
+*.bak
+*.dep
+*.plg
+*.lnp
+*.tlog
+*.htm
+*.crf
+
+# User-specific / generated debug db
+*.uvgui.*
+*.uvguix.*
+*.scvd
+*.tmp
+*.iex
+
+# Common output folders
+Listings/
+Objects/
+RTE/_Project/
+RTE/Device/
+
+# CMSIS-Pack local cache / downloaded packs
+.Pack/
+*.pack
+
+# STM32CubeIDE / Eclipse style
+.settings/
+.project
+.cproject
+.mxproject
+
+# =========================
+# Coverage / test
+# =========================
+coverage/
+htmlcov/
+*.gcda
+*.gcno
+*.gcov
+
+# =========================
+# Archives
+# =========================
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
+
+# =========================
+# Local working dirs
+# =========================
+.work/
+.cache/
+tmp/
+temp/
+
+# keep prebuilt third-party libraries
+!ThirdParty/
+!ThirdParty/**
+!ThirdParty/**/*.lib
+!ThirdParty/**/*.a

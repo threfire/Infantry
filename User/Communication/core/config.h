@@ -1,0 +1,44 @@
+#ifndef CORE_CONFIG_H
+#define CORE_CONFIG_H
+
+#include <stdint.h>
+
+/* ========== Channel manager defaults ========== */
+#ifndef CH_MAX
+#define CH_MAX 8
+#endif
+
+#ifndef CH_ARB_FAIR_AGE
+#define CH_ARB_FAIR_AGE 10
+#endif
+
+#ifndef COMM_CHANNEL_PENDING_PAYLOAD_SIZE
+#define COMM_CHANNEL_PENDING_PAYLOAD_SIZE 128
+#endif
+
+#ifndef COMM_MUX_TX_BUFFER_SIZE
+#define COMM_MUX_TX_BUFFER_SIZE 520
+#endif
+
+/* ========== UPROTO default configuration ========== */
+#ifndef UPROTO_DEFAULT_HANDSHAKE_TIMEOUT_MS
+#define UPROTO_DEFAULT_HANDSHAKE_TIMEOUT_MS 0U
+#endif
+
+#ifndef UPROTO_DEFAULT_HEARTBEAT_INTERVAL_MS
+#define UPROTO_DEFAULT_HEARTBEAT_INTERVAL_MS 0U
+#endif
+
+#ifndef UPROTO_DEFAULT_TIMEOUT_MS
+#define UPROTO_DEFAULT_TIMEOUT_MS 3000U
+#endif
+
+#ifndef UPROTO_DEFAULT_RETRIES
+#define UPROTO_DEFAULT_RETRIES 3U
+#endif
+
+#ifndef UPROTO_DEFAULT_ENABLE_AUTO_HANDSHAKE
+#define UPROTO_DEFAULT_ENABLE_AUTO_HANDSHAKE 0
+#endif
+
+#endif // CORE_CONFIG_H
