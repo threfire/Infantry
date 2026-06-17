@@ -84,6 +84,7 @@ typedef struct
 
 extern __IO CAN_ErrorStatus can_error_status;
 extern MITMeasure_t MIT_MOTOR_MEASURE[4];
+extern motor_measure_t DJI_MOTOR_MEASURE[8];
 extern motor_measure_t CHASSIS_MOTOR_MEASURE[4];
 
 void bsp_can_init(void);
@@ -102,6 +103,7 @@ void CAN_cmd_MIT(FDCAN_HandleTypeDef *hcan, uint16_t id, float _pos, float _vel,
 void CAN_cmd_CHAS_3508(int16_t motor1, int16_t motor2, int16_t motor3, int16_t motor4);
 void CAN_cmd_CHAS_6020(int16_t motor5, int16_t motor6, int16_t motor7, int16_t motor8);
 void CAN_cmd_CHASSIS_ALL(int16_t motor205, int16_t motor206, int16_t motor207, int16_t motor208);
+void CAN_cmd_SHOOT_ALL(int16_t motor201, int16_t motor202, int16_t motor203, int16_t motor204);
 motor_measure_t *get_chassis_motor_measure_point(uint8_t i);
 void Motor_save_zero(FDCAN_HandleTypeDef *hcan, uint16_t id);
 void Motor_ENABLE(FDCAN_HandleTypeDef *hcan, uint16_t id);

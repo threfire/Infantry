@@ -1,7 +1,7 @@
 /**
   * @file       shoot_3508.c
-  * @brief      3508 摩擦轮与 MIT 拨弹控制
-  * @note       实现摩擦轮 ADRC 控制、掉速前馈、拨弹力矩控制和在线门控。
+  * @brief      3508 摩擦轮与 DJI 拨弹控制
+  * @note       实现摩擦轮 ADRC 控制、掉速前馈、拨弹位置闭环和在线门控。
   */
 #include "shoot_3508.h"
 
@@ -14,8 +14,6 @@
 
 #if (ROBOT_FRICTION == ROBOT_FRICTION_3508)
 
-extern motor_measure_t DJI_MOTOR_MEASURE[8];
-
 shoot_task_control_t shoot_task_control;
 
 static void shoot_task_init_control(shoot_task_control_t *control);
@@ -26,8 +24,10 @@ static bool shoot_task_strum_online(void);
 static void shoot_task_control_friction(shoot_task_control_t *control);
 static void shoot_task_stop_friction(shoot_task_control_t *control);
 static void shoot_task_control_strum(shoot_task_control_t *control);
-static void shoot_task_send_friction_current(int16_t fric1_current, int16_t fric2_current, int16_t fric3_current);
-static void shoot_task_send_strum_torque(float torque_nm);
+static void shoot_task_send_motor_current(int16_t fric1_current,
+                                          int16_t fric2_current,
+                                          int16_t fric3_current,
+                                          int16_t strum_current_cmd);
 static void shoot_task_motor_init(shoot_task_motor_t *motor,
                                   const motor_measure_t *measure,
                                   float direction,
@@ -68,7 +68,7 @@ static float shoot_task_min_float(float a, float b);
 static float shoot_task_clamp_float(float value, float min_value, float max_value);
 
 /**
-  * @brief          初始化 3508 摩擦轮和 MIT 拨弹控制状态
+  * @brief          初始化 3508 摩擦轮和 DJI 拨弹控制状态
   * @note           发射模块挂在云台任务内运行，初始化函数只建立状态，不做阻塞等待。
   * @retval         none
   */
@@ -138,7 +138,6 @@ static void shoot_task_init_control(shoot_task_control_t *control)
                           SHOOT_FRIC3_OBSERVER_RATIO,
                           SHOOT_FRIC3_OUTPUT_RATE_LIMIT);
 
-    Motor_ENABLE(&hfdcan1, DM_STRUM_CAN_ID);
 }
 
 static void shoot_task_set_mode(shoot_task_control_t *control)
@@ -240,7 +239,7 @@ static bool shoot_task_friction_online(void)
 }
 
 /**
-  * @brief          拨弹 MIT 电机在线状态
+  * @brief          拨弹 DJI 电机在线状态
   * @retval         true: 拨弹电机在线，false: 拨弹电机离线
   */
 static bool shoot_task_strum_online(void)
@@ -367,9 +366,6 @@ static void shoot_task_control_friction(shoot_task_control_t *control)
     shoot_task_motor_update_current_physics(&control->fric2);
     shoot_task_motor_update_current_physics(&control->fric3);
 
-    shoot_task_send_friction_current(control->fric1.give_current,
-                                     control->fric2.give_current,
-                                     control->fric3.give_current);
     shoot_task_update_bullet_speed_estimate(control);
     shoot_task_update_fire_detect(control);
     shoot_task_update_history(control);
@@ -427,12 +423,12 @@ static void shoot_task_stop_friction(shoot_task_control_t *control)
         shoot_task_motor_reset(&control->fric3);
     }
 
-    shoot_task_send_friction_current(0, 0, 0);
+    shoot_task_send_motor_current(0, 0, 0, 0);
 }
 
 /**
   * @brief          拨弹控制
-  * @note           STOP 无力模式和拨弹离线时直接发送 0 力矩；READY 模式下才进入位置/力矩控制。
+  * @note           STOP 无力模式和拨弹离线时直接发送 0 电流；READY 模式下才进入位置/电流控制。
   * @param[out]     control: 发射控制结构体指针
   * @retval         none
   */
@@ -445,13 +441,13 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
     static uint16_t hold_ticks = 0U;
     static uint16_t single_ff_ticks = 0U;
     static uint16_t single_ff_release_ticks = 0U;
-    static float single_ff_torque = 0.0f;
+    static float single_ff_current_a = 0.0f;
     static float target_pos = 0.0f;
     static float target_cmd_pos = 0.0f;
     static float feedback_pos_last = 0.0f;
     static float feedback_pos_continuous = 0.0f;
     static float pid_iout = 0.0f;
-    MITMeasure_t *strum_measure;
+    motor_measure_t *strum_measure;
     uint32_t now;
     uint16_t long_press_ticks;
     uint16_t single_ff_release_total_ticks;
@@ -460,11 +456,11 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
     bool press_l;
     bool strum_ready;
     bool single_ff_active;
-    const float release_lock_vel = SHOOT_STRUM_RELEASE_LOCK_VEL_RADPS;
+    const float release_lock_speed_rpm = SHOOT_STRUM_RELEASE_LOCK_SPEED_RPM;
     float feedback_pos;
     float feedback_vel;
     float position_error;
-    float torque_cmd;
+    float current_cmd_a;
     float pid_out;
     float single_ff_target;
 
@@ -477,18 +473,13 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
     heat_blocked = shoot_task_fire_heat_would_over_limit(control);
     strum_ready = (control->mode == SHOOT_TASK_READY_FRIC) && !heat_blocked;
     control->heat_limit_active = heat_blocked;
-    strum_measure = &MIT_MOTOR_MEASURE[SHOOT_STRUM_MIT_INDEX];
+    strum_measure = &DJI_MOTOR_MEASURE[3];
     now = HAL_GetTick();
     feedback_ready = shoot_task_strum_online() &&
-                     (strum_measure->fdb.last_fdb_time != 0U) &&
-                     ((now - strum_measure->fdb.last_fdb_time) <= SHOOT_STRUM_FDB_TIMEOUT);
+                     (strum_measure->last_fdb_time != 0U) &&
+                     ((now - strum_measure->last_fdb_time) <= SHOOT_STRUM_FDB_TIMEOUT);
     if (!strum_ready || !feedback_ready)
     {
-        strum_measure->set.POS = 0.0f;
-        strum_measure->set.VEL = 0.0f;
-        strum_measure->set.KP = 0.0f;
-        strum_measure->set.KD = 0.0f;
-        strum_measure->set.TOR = 0.0f;
         target_valid = false;
         last_press_l = false;
         long_press_active = false;
@@ -496,19 +487,22 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
         hold_ticks = 0U;
         single_ff_ticks = 0U;
         single_ff_release_ticks = 0U;
-        single_ff_torque = 0.0f;
+        single_ff_current_a = 0.0f;
         target_pos = 0.0f;
         target_cmd_pos = 0.0f;
         feedback_pos_last = 0.0f;
         feedback_pos_continuous = 0.0f;
         pid_iout = 0.0f;
-        /* STOP 无力模式和拨弹离线保护只发送 0 力矩，不进入拨弹闭环。 */
-        shoot_task_send_strum_torque(0.0f);
+        /* STOP 无力模式和拨弹离线保护只发送 0 电流，不进入拨弹闭环。 */
+        shoot_task_send_motor_current(control->fric1.give_current,
+                                      control->fric2.give_current,
+                                      control->fric3.give_current,
+                                      0);
         return;
     }
 
-    feedback_pos = strum_measure->fdb.pos;
-    feedback_vel = strum_measure->fdb.vel;
+    feedback_pos = (float)strum_measure->ecd * SHOOT_STRUM_ECD_TO_RAD;
+    feedback_vel = (float)strum_measure->speed_rpm * 2.0f * PI / 60.0f;
     if (!target_valid)
     {
         target_pos = feedback_pos;
@@ -521,7 +515,7 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
     else
     {
         float feedback_delta;
-        const float feedback_range = P_MAX - P_MIN;
+        const float feedback_range = 2.0f * PI;
         const float feedback_half_range = feedback_range * 0.5f;
 
         feedback_delta = feedback_pos - feedback_pos_last;
@@ -540,7 +534,7 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
 
     long_press_ticks = shoot_task_ms_to_ticks(SHOOT_STRUM_LONG_PRESS_MS);
     single_ff_release_total_ticks = shoot_task_ms_to_ticks(SHOOT_STRUM_SINGLE_FF_RELEASE_MS);
-    torque_cmd = 0.0f;
+    current_cmd_a = 0.0f;
 
     if (press_l)
     {
@@ -575,8 +569,8 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
             pid_iout = 0.0f;
             single_ff_ticks = 0U;
             single_ff_release_ticks = 0U;
-            single_ff_torque = 0.0f;
-            torque_cmd = SHOOT_STRUM_DIRECTION * SHOOT_STRUM_LONG_PRESS_TORQUE_NM;
+            single_ff_current_a = 0.0f;
+            current_cmd_a = SHOOT_STRUM_DIRECTION * SHOOT_STRUM_LONG_PRESS_TORQUE_NM;
         }
     }
     else
@@ -602,7 +596,7 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
             target_cmd_pos = target_pos;
             pid_iout = 0.0f;
 
-            if (fabsf(feedback_vel) <= release_lock_vel)
+            if (fabsf((float)strum_measure->speed_rpm) <= release_lock_speed_rpm)
             {
                 release_follow_active = false;
             }
@@ -612,7 +606,7 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
     single_ff_active = strum_ready &&
                        ((single_ff_ticks > 0U) ||
                         (single_ff_release_ticks > 0U) ||
-                        (fabsf(single_ff_torque) >= 0.001f));
+                        (fabsf(single_ff_current_a) >= 0.001f));
 
     if (strum_ready && !long_press_active && !release_follow_active)
     {
@@ -646,7 +640,7 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
         pid_out = shoot_task_clamp_float(pid_out,
                                          -SHOOT_STRUM_TORQUE_PID_MAX_OUT,
                                          SHOOT_STRUM_TORQUE_PID_MAX_OUT);
-        torque_cmd = pid_out;
+        current_cmd_a = pid_out;
     }
 
     single_ff_target = 0.0f;
@@ -666,34 +660,39 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
             ((float)single_ff_release_ticks / (float)single_ff_release_total_ticks);
         single_ff_release_ticks--;
     }
-    single_ff_torque +=
-        SHOOT_STRUM_SINGLE_FF_FILTER_ALPHA * (single_ff_target - single_ff_torque);
+    single_ff_current_a +=
+        SHOOT_STRUM_SINGLE_FF_FILTER_ALPHA * (single_ff_target - single_ff_current_a);
     if ((single_ff_ticks == 0U) &&
         (single_ff_release_ticks == 0U) &&
-        (fabsf(single_ff_torque) < 0.001f))
+        (fabsf(single_ff_current_a) < 0.001f))
     {
-        single_ff_torque = 0.0f;
+        single_ff_current_a = 0.0f;
     }
-    torque_cmd += single_ff_torque;
+    current_cmd_a += single_ff_current_a;
 
-    torque_cmd = shoot_task_clamp_float(torque_cmd, T_MIN, T_MAX);
-    strum_measure->set.POS = target_cmd_pos;
-    strum_measure->set.VEL = 0.0f;
-    strum_measure->set.KP = 0.0f;
-    strum_measure->set.KD = 0.0f;
-    strum_measure->set.TOR = torque_cmd;
+    current_cmd_a = shoot_task_clamp_float(current_cmd_a,
+                                           -SHOOT_STRUM_TORQUE_PID_MAX_OUT,
+                                           SHOOT_STRUM_TORQUE_PID_MAX_OUT);
     last_press_l = press_l;
-    shoot_task_send_strum_torque(torque_cmd);
+    shoot_task_send_motor_current(control->fric1.give_current,
+                                  control->fric2.give_current,
+                                  control->fric3.give_current,
+                                  shoot_task_current_ma_to_esc_cmd(
+                                      shoot_task_current_a_to_current_ma(current_cmd_a)));
 }
 
 /**
-  * @brief          发送三路摩擦轮电流
+  * @brief          发送三路摩擦轮和拨弹电流
   * @param[in]      fric1_current: 摩擦轮 1 电流，单位 mA
   * @param[in]      fric2_current: 摩擦轮 2 电流，单位 mA
   * @param[in]      fric3_current: 摩擦轮 3 电流，单位 mA
+  * @param[in]      strum_current_cmd: 拨弹电流命令，单位电流命令计数
   * @retval         none
   */
-static void shoot_task_send_friction_current(int16_t fric1_current, int16_t fric2_current, int16_t fric3_current)
+static void shoot_task_send_motor_current(int16_t fric1_current,
+                                          int16_t fric2_current,
+                                          int16_t fric3_current,
+                                          int16_t strum_current_cmd)
 {
     uint8_t data[8];
     int16_t fric1_cmd = shoot_task_current_ma_to_esc_cmd(fric1_current);
@@ -706,21 +705,10 @@ static void shoot_task_send_friction_current(int16_t fric1_current, int16_t fric
     data[3] = (uint8_t)fric2_cmd;
     data[4] = (uint8_t)((uint16_t)fric3_cmd >> 8);
     data[5] = (uint8_t)fric3_cmd;
-    data[6] = 0U;
-    data[7] = 0U;
+    data[6] = (uint8_t)((uint16_t)strum_current_cmd >> 8);
+    data[7] = (uint8_t)strum_current_cmd;
 
     canx_send_data(&hfdcan2, SHOOT_FRICTION_CMD_ID, data, 8U);
-}
-
-/**
-  * @brief          发送拨弹 MIT 力矩命令
-  * @param[in]      torque_nm: 拨弹输入力矩命令，单位 N*m
-  * @retval         none
-  */
-static void shoot_task_send_strum_torque(float torque_nm)
-{
-    torque_nm = shoot_task_clamp_float(torque_nm, T_MIN, T_MAX);
-    CAN_cmd_MIT(&hfdcan1, DM_STRUM_CAN_ID, 0.0f, 0.0f, 0.0f, 0.0f, torque_nm);
 }
 
 static void shoot_task_motor_init(shoot_task_motor_t *motor,

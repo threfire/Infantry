@@ -23,7 +23,7 @@ enum errorList
     CHASSIS_MOTOR6_TOE,
     CHASSIS_MOTOR7_TOE,
     CHASSIS_MOTOR8_TOE,
-    PLUCK_MOTOR_TOE,        // 拨弹 MIT 电机在线检测
+    PLUCK_MOTOR_TOE,        // 拨弹 DJI 电机在线检测
     FRIC1_MOTOR_TOE,        // 摩擦轮 1 电机在线检测
     FRIC2_MOTOR_TOE,        // 摩擦轮 2 电机在线检测
     FRIC3_MOTOR_TOE,        // 摩擦轮 3 电机在线检测

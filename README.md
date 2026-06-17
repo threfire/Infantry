@@ -1,13 +1,13 @@
-# Hero
+# Infantry
 
-`Hero` 是一套面向 RoboMaster 英雄机器人的 STM32H723VGTx 控制板固件工程。主控基于 STM32 HAL、FreeRTOS CMSIS-RTOS v1、FDCAN、UART DMA、USB CDC 和 OCTOSPI2，实现云台、底盘、发射、自瞄通信、裁判数据解析、在线检测、功率控制、W25Q64 外部 Flash、VOFA 调试和外置灯板状态帧输出。
+`Infantry` 是一套面向 RoboMaster 步兵机器人的 STM32H723VGTx 控制板固件工程。主控基于 STM32 HAL、FreeRTOS CMSIS-RTOS v1、FDCAN、UART DMA、USB CDC 和 OCTOSPI2，实现云台、底盘、发射、自瞄通信、裁判数据解析、在线检测、功率控制、W25Q64 外部 Flash、VOFA 调试和外置灯板状态帧输出。
 
 当前工程已经将机器人级参数文件整理为 `User/APP_Support/common/robot_param.h`，业务层代码规范见 `代码规范.md`。CubeMX 生成代码仍以 `CtrlBoard-H7_WS1812.ioc` 为入口，手写业务代码集中放在 `User` 目录。
 
 ## 功能特性
 
 - 云台控制：yaw/pitch 双轴控制，支持陀螺仪绝对角、编码器相对角、RAW 输出、初始化、校准、静摩擦补偿、惯量前馈、目标曲线和 pitch 重力补偿。
-- 发射控制：三路 3508 摩擦轮 ADRC 闭环、掉速前馈补偿、拨弹 MIT 电机单发/长按控制、反馈超时保护、电机温度保护、开火检测、弹速估计和热量模型禁发。
+- 发射控制：三路 3508 摩擦轮 ADRC 闭环、掉速前馈补偿、拨弹 DJI 电机单发/长按控制、反馈超时保护、电机温度保护、开火检测、弹速估计和热量模型禁发。
 - 发射热量模型：初始热量为 0，开火检测确认一发弹丸后热量 `+100`，热量上限为 `200`，预测下一发会使热量 `>=200` 时禁止拨弹，热量每秒自然下降 `20`。
 - 底盘控制：全向底盘速度规划、运动学正解/逆解、轮速 PID、整车动力学前馈、单轮制动补偿、实际车速反馈、动态电流限制和底盘功率控制。
 - 自瞄通信：USB CDC + uproto + channel 框架，包含云台状态发布、自瞄增量注入、主机底盘/射击命令注入、相机触发和时间同步通道。
@@ -35,7 +35,7 @@
 ## 目录结构
 
 ```text
-Hero/
+Infantry/
 ├── Core/                                   # STM32CubeMX 生成的主控基础工程
 │   ├── Inc/                                # 外设句柄、HAL 配置、FreeRTOSConfig 和中断声明
 │   │   ├── main.h                          # 全局 HAL 入口和 GPIO 宏
@@ -170,7 +170,7 @@ Hero/
 
 ```powershell
 git clone <repo-url>
-cd Hero
+cd Infantry
 ```
 
 2. 打开主控工程：
@@ -277,7 +277,7 @@ shoot_task_set_mode
 -> shoot_task_update_heat_model
 -> shoot_task_control_friction / shoot_task_stop_friction
 -> shoot_task_control_strum
--> shoot_task_send_friction_current / shoot_task_send_strum_torque
+-> shoot_task_send_motor_current
 ```
 
 发射热量链路：
@@ -406,7 +406,7 @@ heat + SHOOT_HEAT_PER_BULLET >= SHOOT_HEAT_LIMIT
 
 | 外设 | 配置 | 用途 |
 |---|---|---|
-| FDCAN1 | Classic CAN，1 Mbps | yaw MIT、拨弹 MIT、底盘电机、PM01 |
+| FDCAN1 | Classic CAN，1 Mbps | yaw MIT、拨弹 DJI、底盘电机、PM01 |
 | FDCAN2 | Classic CAN，1 Mbps | pitch MIT、三路摩擦轮 |
 | FDCAN3 | Classic CAN，0.25 Mbps | 预留接收入口 |
 | UART5 | 100000 baud，8E1，DMA RX | DBUS/SBUS 遥控器 |
@@ -471,7 +471,7 @@ W25Q64 驱动接口：
 
 ### 主要参数文件
 
-- `User/APP_Support/common/robot_param.h`：机器人模式、电容开关、CAN ID、通道映射、云台 PID、底盘几何、底盘速度规划、底盘制动、MIT 电机 ID、发射公共参数。
+- `User/APP_Support/common/robot_param.h`：机器人模式、电容开关、CAN ID、通道映射、云台 PID、底盘几何、底盘速度规划、底盘制动、电机 ID、发射公共参数。
 - `User/APP/chassis_task.h`：底盘控制结构体、底盘模式枚举、任务接口和弱接口声明。
 - `User/APP/gimbal_task.h`：云台控制结构体、云台电机状态、PID 接口和任务接口声明。
 - `User/APP/service_task.h`：服务任务周期、启动延时和 `service_control_t`。
@@ -568,7 +568,7 @@ flash_log_enqueue_error()
 |---|---|---:|---|
 | yaw MIT 电机 | FDCAN1 | `0x01` | `0x51` |
 | pitch MIT 电机 | FDCAN2 | `0x02` | `0x52` |
-| 拨弹 MIT 电机 | FDCAN1 | `0x03` | `0x53` |
+| 拨弹 DJI 电机 | FDCAN1 | `0x200` | `0x204` |
 | 摩擦轮 1/2/3 | FDCAN2 | `0x200` | `0x201` / `0x202` / `0x203` |
 | 底盘 3508 电机组 | FDCAN1 | `0x1FF` | `0x205` ~ `0x208` |
 | PM01 超级电容 | FDCAN1 | `0x600` ~ `0x603` | `0x600` ~ `0x603`、`0x610` ~ `0x613` |

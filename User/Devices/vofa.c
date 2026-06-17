@@ -231,14 +231,14 @@ void VOFA_SendGimbalYawPitchHalf(void)
 
 void VOFA_SendGimbalStrum(void)
 {
-    const MITMeasure_t *strum = &MIT_MOTOR_MEASURE[SHOOT_STRUM_MIT_INDEX];
+    const motor_measure_t *strum = &DJI_MOTOR_MEASURE[3];
 
-    VOFA_Send6(strum->fdb.pos,
-               strum->set.POS,
-               strum->fdb.vel,
-               strum->fdb.tor,
-               strum->set.TOR,
-               strum->fdb.t_motor);
+    VOFA_Send6((float)strum->ecd,
+               (float)strum->speed_rpm,
+               (float)strum->given_current,
+               (float)strum->temperate,
+               (float)shoot_task_control.heat,
+               shoot_task_control.heat_limit_active ? 1.0f : 0.0f);
 }
 
 void VOFA_ServiceSend(void)

@@ -158,7 +158,6 @@ static inline int8_t get_mit_motor_index(uint32_t can_id)
     {
         case DM_YAW_MASTER_ID: return 0;
         case DM_PIT_MASTER_ID: return 1;
-        case DM_STRUM_MASTER_ID: return 2;
         default: return -1;
     }
 }
@@ -170,6 +169,7 @@ static inline int8_t get_dji_motor_index(uint32_t can_id)
         case CAN_FRIC1_ID: return 0;
         case CAN_FRIC2_ID: return 1;
         case CAN_FRIC3_ID: return 2;
+        case CAN_STRUM_ID: return 3;
         default: return -1;
     }
 }
@@ -330,7 +330,6 @@ uint8_t fdcan1_receive(hcan_t *hfdcan, uint16_t *rec_id, uint8_t *buf)
 		switch (pRxHeader.Identifier)
 		{
 			case DM_YAW_MASTER_ID:
-			case DM_STRUM_MASTER_ID:
 			{
 				int8_t motor_index = get_mit_motor_index(pRxHeader.Identifier);
 				if(motor_index < 0 || motor_index >= 4)
@@ -341,9 +340,7 @@ uint8_t fdcan1_receive(hcan_t *hfdcan, uint16_t *rec_id, uint8_t *buf)
 				can1_cnt = (uint8_t)motor_index;
 				MITFdbData(&MIT_MOTOR_MEASURE[can1_cnt], buf, can1_cnt);
 				MIT_MOTOR_MEASURE[can1_cnt].fdb.last_fdb_time = fdb_time;
-				detect_hook((pRxHeader.Identifier == DM_YAW_MASTER_ID) ?
-				            YAW_GIMBAL_MOTOR_TOE :
-				            PLUCK_MOTOR_TOE);
+				detect_hook(YAW_GIMBAL_MOTOR_TOE);
 				break;
 			}
 			case 0x205:
@@ -355,6 +352,13 @@ uint8_t fdcan1_receive(hcan_t *hfdcan, uint16_t *rec_id, uint8_t *buf)
 				get_motor_measure(&CHASSIS_MOTOR_MEASURE[motor_index], buf);
 				CHASSIS_MOTOR_MEASURE[motor_index].last_fdb_time = fdb_time;
 				detect_hook((uint8_t)(CHASSIS_MOTOR1_TOE + motor_index));
+				break;
+			}
+			case CAN_STRUM_ID:
+			{
+				get_motor_measure(&DJI_MOTOR_MEASURE[3], buf);
+				DJI_MOTOR_MEASURE[3].last_fdb_time = fdb_time;
+				detect_hook(PLUCK_MOTOR_TOE);
 				break;
 			}
 			case 0x600:
@@ -574,6 +578,22 @@ void CAN_cmd_CHASSIS_ALL(int16_t motor205, int16_t motor206, int16_t motor207, i
 	data[7] = (uint8_t)motor208;
 
 	canx_send_data(&hfdcan1, CAN_CHASSIS_ALL_ID, data, 8U);
+}
+
+void CAN_cmd_SHOOT_ALL(int16_t motor201, int16_t motor202, int16_t motor203, int16_t motor204)
+{
+	uint8_t data[8];
+
+	data[0] = (uint8_t)((uint16_t)motor201 >> 8);
+	data[1] = (uint8_t)motor201;
+	data[2] = (uint8_t)((uint16_t)motor202 >> 8);
+	data[3] = (uint8_t)motor202;
+	data[4] = (uint8_t)((uint16_t)motor203 >> 8);
+	data[5] = (uint8_t)motor203;
+	data[6] = (uint8_t)((uint16_t)motor204 >> 8);
+	data[7] = (uint8_t)motor204;
+
+	canx_send_data(&hfdcan1, 0x200U, data, 8U);
 }
 
 motor_measure_t *get_chassis_motor_measure_point(uint8_t i)

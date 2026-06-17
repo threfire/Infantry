@@ -119,7 +119,6 @@ extern "C" {
 #define INS_GYRO_Z_ADDRESS_OFFSET          2      // INS gyro z 索引
 #define GIMBAL_YAW_MIT_INDEX               0U     // MIT 电机反馈数组中 yaw 电机索引
 #define GIMBAL_PITCH_MIT_INDEX             1u     // MIT 电机反馈数组中 pitch 电机索引
-#define SHOOT_STRUM_MIT_INDEX              2u     // MIT 电机反馈数组中拨弹电机索引
 #define GIMBAL_MIT_FEEDBACK_INIT_DELAY     100U   // MIT 电机反馈初始化延时，单位 ms
 
 /* ========================= 拨弹控制参数 ========================= */
@@ -194,9 +193,7 @@ extern "C" {
 /* ========================= CAN 电机 ID 配置 ========================= */
 /* CAN1: yaw DM MIT motor and strum DM MIT motor */
 #define DM_YAW_CAN_ID                       0X01
-#define DM_STRUM_CAN_ID                     0X03
 #define DM_YAW_MASTER_ID                    0X51
-#define DM_STRUM_MASTER_ID                  0X53
 
 /* CAN2: pitch DM MIT motor */
 #define DM_PIT_CAN_ID                       0X02
@@ -204,6 +201,7 @@ extern "C" {
 #define CAN_FRIC1_ID                        0X201 // 摩擦轮 1 电机 ID
 #define CAN_FRIC2_ID                        0X202 // 摩擦轮 2 电机 ID
 #define CAN_FRIC3_ID                        0X203 // 摩擦轮 3 电机 ID
+#define CAN_STRUM_ID                        0X204 // 拨弹 DJI 电机反馈 ID
 
 #define CAN_CHASSIS_ALL_ID                0x1FF  // 底盘 3508 电机电流控制广播 ID
 #define CAN_M1_3508_ID                    0x205  // 底盘 3508 电机 1 反馈 ID
