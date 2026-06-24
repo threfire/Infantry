@@ -168,8 +168,7 @@ bool gimbal_cmd_to_shoot_stop(void)
 {
     return (gimbal_behaviour == GIMBAL_INIT ||
             gimbal_behaviour == GIMBAL_CALI ||
-            gimbal_behaviour == GIMBAL_ZERO_FORCE ||
-            gimbal_behaviour == GIMBAL_MOTIONLESS);
+            gimbal_behaviour == GIMBAL_ZERO_FORCE);
 }
 
 /**

@@ -124,7 +124,7 @@ extern "C" {
 /* ========================= 拨弹控制参数 ========================= */
 //ps:拨弹盘减速比4，如有改动前馈力矩也得跟着改
 #define SHOOT_STRUM_SINGLE_STEP_RAD        (PI * 1.0f) // 单次拨弹角度，单位 rad
-#define SHOOT_STRUM_LONG_PRESS_MS          200U        // 长按判定时间，单位 ms
+#define SHOOT_STRUM_LONG_PRESS_MS          500U        // 长按判定时间，单位 ms
 #define SHOOT_STRUM_DIRECTION              1.0f        // 拨弹方向符号
 #define SHOOT_STRUM_FDB_TIMEOUT            100U        // 拨弹反馈超时，单位 ms
 #define SHOOT_STRUM_SINGLE_TORQUE_FF_NM    7.0f        // 单击拨弹前馈力矩，单位 N*m

@@ -9,6 +9,7 @@
 #include "shoot_task.h"
 
 #define SHOOT_FRICTION_CMD_ID 0x200U
+#define SHOOT_STRUM_CMD_ID 0x200U
 #define SHOOT_FRIC_RPM_TO_MPS (2.0f * PI * SHOOT_FRIC_WHEEL_RADIUS_M / 60.0f)
 #define SHOOT_FRIC_MA_PER_A 1000.0f
 #define SHOOT_STRUM_ECD_TO_RAD (2.0f * PI / 8192.0f)

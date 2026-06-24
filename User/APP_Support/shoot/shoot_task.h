@@ -11,6 +11,7 @@
 
 #include "adrc.h"
 #include "bsp_fdcan.h"
+#include "pid.h"
 #include "robot_param.h"
 #include "remote_control.h"
 
@@ -70,6 +71,98 @@
 
 #ifndef SHOOT_STRUM_POS_DEADBAND
 #define SHOOT_STRUM_POS_DEADBAND 0.02f
+#endif
+
+#ifndef SHOOT_STRUM_REDUCTION_RATIO
+#define SHOOT_STRUM_REDUCTION_RATIO 36.0f  // 2006 拨弹电机减速比，电机侧反馈/输出轴运动 = 36
+#endif
+
+#ifndef SHOOT_STRUM_SINGLE_STEP_ECD
+#define SHOOT_STRUM_SINGLE_STEP_ECD (1024.0f * SHOOT_STRUM_REDUCTION_RATIO) // 2006 电机侧单步目标，对应拨盘输出轴 1/8 圈
+#endif
+
+#ifndef SHOOT_STRUM_CMD_KP
+#define SHOOT_STRUM_CMD_KP 0.05f            // 2006 拨弹位置误差到电流命令的比例系数，单位 cmd/ecd
+#endif
+
+#ifndef SHOOT_STRUM_CMD_KD
+#define SHOOT_STRUM_CMD_KD 0.01f            // 2006 拨弹速度阻尼系数，单位 cmd/rpm
+#endif
+
+#ifndef SHOOT_STRUM_CMD_MAX
+#define SHOOT_STRUM_CMD_MAX 8192.0f         // 2006 拨弹电流命令限幅
+#endif
+
+#ifndef SHOOT_STRUM_POS_DEADBAND_ECD
+#define SHOOT_STRUM_POS_DEADBAND_ECD 20.0f  // 2006 拨弹到位死区，单位编码器刻度
+#endif
+
+#ifndef SHOOT_STRUM_CONTINUE_SPEED_RPM
+#define SHOOT_STRUM_CONTINUE_SPEED_RPM 150.0f // 拨盘输出轴连发目标转速，单位 rpm
+#endif
+
+#ifndef SHOOT_STRUM_SPEED_PID_KP
+#define SHOOT_STRUM_SPEED_PID_KP 24.0f        // 2006 拨弹连发速度 PID 比例系数，单位 cmd/rpm
+#endif
+
+#ifndef SHOOT_STRUM_SPEED_PID_KI
+#define SHOOT_STRUM_SPEED_PID_KI 0.0f         // 2006 拨弹连发速度 PID 积分系数
+#endif
+
+#ifndef SHOOT_STRUM_SPEED_PID_KD
+#define SHOOT_STRUM_SPEED_PID_KD 1.0f         // 2006 拨弹连发速度 PID 微分系数
+#endif
+
+#ifndef SHOOT_STRUM_SPEED_PID_MAX_OUT
+#define SHOOT_STRUM_SPEED_PID_MAX_OUT 6500.0f // 2006 拨弹连发速度 PID 输出限幅，单位 cmd
+#endif
+
+#ifndef SHOOT_STRUM_SPEED_PID_MAX_IOUT
+#define SHOOT_STRUM_SPEED_PID_MAX_IOUT 0.0f   // 2006 拨弹连发速度 PID 积分限幅，单位 cmd
+#endif
+
+#ifndef SHOOT_STRUM_CONTINUE_FF_CMD
+#define SHOOT_STRUM_CONTINUE_FF_CMD 1000.0f   // 2006 拨弹连发克服静摩擦的前馈电流命令
+#endif
+
+#ifndef SHOOT_STRUM_CONTINUE_CMD_MAX
+#define SHOOT_STRUM_CONTINUE_CMD_MAX 8192.0f  // 2006 拨弹连发电流命令限幅
+#endif
+
+#ifndef SHOOT_STRUM_BLOCK_SPEED_RPM
+#define SHOOT_STRUM_BLOCK_SPEED_RPM 20.0f     // 2006 拨弹堵转判定转速阈值，单位 rpm
+#endif
+
+#ifndef SHOOT_STRUM_BLOCK_CURRENT_CMD
+#define SHOOT_STRUM_BLOCK_CURRENT_CMD 4500    // 2006 拨弹堵转判定反馈电流命令阈值
+#endif
+
+#ifndef SHOOT_STRUM_BLOCK_TIME_MS
+#define SHOOT_STRUM_BLOCK_TIME_MS 120U        // 2006 拨弹低速大电流持续该时间后触发反转，单位 ms
+#endif
+
+#ifndef SHOOT_STRUM_REVERSE_TIME_MS
+#define SHOOT_STRUM_REVERSE_TIME_MS 140U      // 2006 拨弹堵转反转退弹时间，单位 ms
+#endif
+
+#ifndef SHOOT_STRUM_REVERSE_CMD
+#define SHOOT_STRUM_REVERSE_CMD 3500.0f       // 2006 拨弹堵转反转电流命令
+#endif
+
+#ifndef SHOOT_STRUM_RETREAT_RC_CHANNEL
+#define SHOOT_STRUM_RETREAT_RC_CHANNEL 3      // 左摇杆竖直通道，拉到最低触发退弹
+#endif
+
+#ifndef SHOOT_STRUM_RETREAT_RC_THRESHOLD
+#define SHOOT_STRUM_RETREAT_RC_THRESHOLD (-600) // 左摇杆下拉判定阈值
+#endif
+
+#ifndef SHOOT_STRUM_RETREAT_SPEED_RPM
+#define SHOOT_STRUM_RETREAT_SPEED_RPM 120.0f  // 拨盘输出轴持续退弹目标转速，单位 rpm
+#endif
+
+#ifndef SHOOT_STRUM_RETREAT_FF_CMD
+#define SHOOT_STRUM_RETREAT_FF_CMD 2000.0f    // 2006 持续退弹克服阻力的前馈电流命令
 #endif
 
 /* 摩擦轮目标与保护配置 */
@@ -301,6 +394,36 @@ typedef struct
 
 typedef struct
 {
+    bool target_valid;              // 拨弹目标是否已经初始化
+    bool last_switch_up;            // 上一周期拨弹拨杆是否为 UP
+    bool last_switch_down;          // 上一周期拨弹拨杆是否为 DOWN
+    bool last_switch_mid;           // 上一周期拨弹拨杆是否为 MID
+    bool switch_up;                 // 当前周期拨弹拨杆是否为 UP
+    bool switch_down;               // 当前周期拨弹拨杆是否为 DOWN
+    bool switch_mid;                // 当前周期拨弹拨杆是否为 MID
+    bool strum_ready;               // 拨弹控制允许状态
+    bool feedback_ready;            // 拨弹 2006 反馈有效状态
+    float target_ecd;               // 拨弹目标连续编码器刻度，单位为 2006 电机侧编码器刻度
+    float target_cmd_ecd;           // 拨弹低通后的目标连续编码器刻度
+    float feedback_ecd;             // 拨弹当前单圈编码器刻度
+    float feedback_ecd_last;        // 拨弹上一周期单圈编码器刻度
+    float feedback_ecd_continuous;  // 拨弹连续编码器刻度
+    int32_t feedback_round;         // 拨弹编码器跨 8192/0 后的圈数
+    float position_error_ecd;       // 拨弹位置误差，单位编码器刻度
+    uint16_t switch_hold_ticks;      // 拨弹拨杆保持时间，单位控制周期
+    uint16_t block_ticks;            // 拨弹堵转持续计数，单位控制周期
+    uint16_t reverse_ticks;          // 拨弹反转退弹剩余计数，单位控制周期
+    bool continuous_active;          // 拨弹连发速度控制状态
+    bool single_active;              // 拨弹单发位置控制状态
+    bool single_pending;             // 拨弹单发候选状态
+    bool retreat_active;             // 拨弹持续退弹状态
+    bool speed_pid_active;           // 拨弹速度 PID 运行状态
+    pid_type_def speed_pid;          // 拨弹连发/退弹速度 PID
+    int16_t current_cmd;            // 拨弹发送到 2006 电调的电流命令
+} shoot_task_strum_t;
+
+typedef struct
+{
     shoot_task_mode_e mode;
     shoot_task_mode_e last_mode;
     const RC_ctrl_t *rc;
@@ -308,6 +431,7 @@ typedef struct
     shoot_task_motor_t fric1;
     shoot_task_motor_t fric2;
     shoot_task_motor_t fric3;
+    shoot_task_strum_t strum;
     bool bullet_speed_est_active;
     uint16_t bullet_speed_est_ticks;
     float bullet_speed_start_avg_rpm;

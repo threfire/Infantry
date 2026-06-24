@@ -30,7 +30,7 @@ void ServiceTask_Init(void)
 }
 /**/
 
-
+uint16_t test_tick = 0;
 /**
   * @brief          模块私有任务主流程
   * @param[in]      none
@@ -49,7 +49,7 @@ static void service_task(void *pvParameters)
 
     while (1)
     {
-			
+			test_tick ++;
       service_control.service_time += SERVICE_CONTROL_TIME;
 			ws2812_task();
 			Beep_Task();

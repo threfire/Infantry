@@ -16,14 +16,24 @@
 
 shoot_task_control_t shoot_task_control;
 
+static const float shoot_strum_speed_pid_param[3] = {
+    SHOOT_STRUM_SPEED_PID_KP,
+    SHOOT_STRUM_SPEED_PID_KI,
+    SHOOT_STRUM_SPEED_PID_KD,
+};
+
 static void shoot_task_init_control(shoot_task_control_t *control);
 static void shoot_task_set_mode(shoot_task_control_t *control);
 static void shoot_task_update_feedback(shoot_task_control_t *control);
-static bool shoot_task_friction_online(void);
 static bool shoot_task_strum_online(void);
 static void shoot_task_control_friction(shoot_task_control_t *control);
 static void shoot_task_stop_friction(shoot_task_control_t *control);
 static void shoot_task_control_strum(shoot_task_control_t *control);
+static float shoot_task_strum_speed_pid_calc(shoot_task_strum_t *strum,
+                                             float feedback_speed_rpm,
+                                             float target_speed_rpm,
+                                             float feedforward_cmd);
+static void shoot_task_strum_speed_pid_clear(shoot_task_strum_t *strum);
 static void shoot_task_send_motor_current(int16_t fric1_current,
                                           int16_t fric2_current,
                                           int16_t fric3_current,
@@ -46,7 +56,6 @@ static float shoot_task_feedback_cmd_to_current_a(int16_t current_cmd);
 static float shoot_task_current_a_to_input_torque_nm(float current_a);
 static void shoot_task_motor_update_current_physics(shoot_task_motor_t *motor);
 static void shoot_task_motor_finalize_current(shoot_task_motor_t *motor);
-static bool shoot_task_motor_ready(const shoot_task_motor_t *motor, uint32_t now);
 static bool shoot_task_motor_should_trigger_feedforward(const shoot_task_motor_t *motor,
                                                         float trigger_drop_rpm,
                                                         float min_speed_ratio);
@@ -79,7 +88,7 @@ __attribute__((used)) void shoot_init(void)
 
 /**
   * @brief          发射控制周期入口
-  * @note           STOP 无力模式直接零输出；READY 模式按在线状态进入摩擦轮和拨弹控制。
+  * @note           STOP 无力模式直接零输出；READY 模式直接进入摩擦轮闭环，拨弹仍按在线状态控制。
   * @retval         none
   */
 __attribute__((used)) void shoot_control_loop(void)
@@ -137,6 +146,11 @@ static void shoot_task_init_control(shoot_task_control_t *control)
                           SHOOT_FRIC3_RESPONSE_TIME_S,
                           SHOOT_FRIC3_OBSERVER_RATIO,
                           SHOOT_FRIC3_OUTPUT_RATE_LIMIT);
+    PID_init(&control->strum.speed_pid,
+             PID_POSITION,
+             shoot_strum_speed_pid_param,
+             SHOOT_STRUM_SPEED_PID_MAX_OUT,
+             SHOOT_STRUM_SPEED_PID_MAX_IOUT);
 
 }
 
@@ -144,8 +158,10 @@ static void shoot_task_set_mode(shoot_task_control_t *control)
 {
 
     static uint16_t last_key_value = 0U;
+    static bool last_switch_down = false;
     uint16_t pressed_keys;
     int shoot_switch;
+    bool switch_down;
 
     if (control == NULL || control->rc == NULL)
     {
@@ -156,6 +172,7 @@ static void shoot_task_set_mode(shoot_task_control_t *control)
     last_key_value = control->rc->key.v;
 
     shoot_switch = control->rc->rc.s[SHOOT_RC_MODE_CHANNEL];
+    switch_down = switch_is_down(shoot_switch);
 
     if ((pressed_keys & KEY_PRESSED_OFFSET_R) != 0U)
     {
@@ -169,16 +186,12 @@ static void shoot_task_set_mode(shoot_task_control_t *control)
         control->friction_enable = false;
     }
 
-    if (switch_is_down(shoot_switch))
+    if (switch_down && !last_switch_down)
     {
 
-        control->friction_enable = true;
+        control->friction_enable = !control->friction_enable;
     }
-    else if (switch_is_mid(shoot_switch))
-    {
-
-        control->friction_enable = false;
-    }
+    last_switch_down = switch_down;
 
     if (gimbal_cmd_to_shoot_stop())
     {
@@ -228,17 +241,6 @@ static void shoot_task_update_feedback(shoot_task_control_t *control)
 }
 
 /**
-  * @brief          摩擦轮在线状态
-  * @retval         true: 三个摩擦轮均在线，false: 任一摩擦轮离线
-  */
-static bool shoot_task_friction_online(void)
-{
-    return (toe_is_error(FRIC1_MOTOR_TOE) == 0U) &&
-           (toe_is_error(FRIC2_MOTOR_TOE) == 0U) &&
-           (toe_is_error(FRIC3_MOTOR_TOE) == 0U);
-}
-
-/**
   * @brief          拨弹 DJI 电机在线状态
   * @retval         true: 拨弹电机在线，false: 拨弹电机离线
   */
@@ -249,27 +251,14 @@ static bool shoot_task_strum_online(void)
 
 /**
   * @brief          摩擦轮闭环控制
-  * @note           三个摩擦轮均在线且 READY 模式有效时进入 ADRC 控制，离线时发 0 并清前馈状态。
+  * @note           READY 模式有效时直接进入 ADRC 控制，三路摩擦轮反馈不参与输出门控。
   * @param[out]     control: 发射控制结构体指针
   * @retval         none
   */
 static void shoot_task_control_friction(shoot_task_control_t *control)
 {
-    uint32_t now;
-
     if (control == NULL)
     {
-        return;
-    }
-
-    now = HAL_GetTick();
-    if (!shoot_task_friction_online() ||
-        !shoot_task_motor_ready(&control->fric1, now) ||
-        !shoot_task_motor_ready(&control->fric2, now) ||
-        !shoot_task_motor_ready(&control->fric3, now))
-    {
-
-        shoot_task_stop_friction(control);
         return;
     }
 
@@ -426,12 +415,301 @@ static void shoot_task_stop_friction(shoot_task_control_t *control)
     shoot_task_send_motor_current(0, 0, 0, 0);
 }
 
+static float shoot_task_strum_speed_pid_calc(shoot_task_strum_t *strum,
+                                             float feedback_speed_rpm,
+                                             float target_speed_rpm,
+                                             float feedforward_cmd)
+{
+    float current_cmd;
+
+    if (strum == NULL)
+    {
+        return 0.0f;
+    }
+
+    if (!strum->speed_pid_active)
+    {
+        PID_clear(&strum->speed_pid);
+        strum->speed_pid_active = true;
+    }
+
+    current_cmd = PID_Calc(&strum->speed_pid, feedback_speed_rpm, target_speed_rpm) +
+                  feedforward_cmd;
+
+    return shoot_task_clamp_float(current_cmd,
+                                  -SHOOT_STRUM_CONTINUE_CMD_MAX,
+                                  SHOOT_STRUM_CONTINUE_CMD_MAX);
+}
+
+static void shoot_task_strum_speed_pid_clear(shoot_task_strum_t *strum)
+{
+    if (strum == NULL)
+    {
+        return;
+    }
+
+    PID_clear(&strum->speed_pid);
+    strum->speed_pid_active = false;
+}
+
 /**
   * @brief          拨弹控制
   * @note           STOP 无力模式和拨弹离线时直接发送 0 电流；READY 模式下才进入位置/电流控制。
   * @param[out]     control: 发射控制结构体指针
   * @retval         none
   */
+static void shoot_task_control_strum(shoot_task_control_t *control)
+{
+    shoot_task_strum_t *strum;
+    motor_measure_t *strum_measure;
+    uint32_t now;
+    uint16_t long_press_ticks;
+    uint16_t block_ticks;
+    uint16_t reverse_ticks;
+    int32_t feedback_delta_ecd;
+    bool retreat_was_active;
+    float current_cmd;
+    float target_speed_rpm;
+    float target_error_ecd;
+
+    if (control == NULL || control->rc == NULL)
+    {
+        return;
+    }
+
+    strum = &control->strum;
+    strum->switch_up = switch_is_up(control->rc->rc.s[SHOOT_RC_MODE_CHANNEL]);
+    strum->switch_down = switch_is_down(control->rc->rc.s[SHOOT_RC_MODE_CHANNEL]);
+    strum->switch_mid = switch_is_mid(control->rc->rc.s[SHOOT_RC_MODE_CHANNEL]);
+    strum->strum_ready = true;
+    control->heat_limit_active = false;
+    strum_measure = &DJI_MOTOR_MEASURE[3];
+    now = HAL_GetTick();
+    strum->feedback_ready = shoot_task_strum_online() &&
+                            (strum_measure->last_fdb_time != 0U) &&
+                            ((now - strum_measure->last_fdb_time) <= SHOOT_STRUM_FDB_TIMEOUT);
+    if (!strum->strum_ready || !strum->feedback_ready)
+    {
+        strum->target_valid = false;
+        strum->last_switch_up = false;
+        strum->last_switch_down = false;
+        strum->last_switch_mid = false;
+        strum->target_ecd = 0.0f;
+        strum->target_cmd_ecd = 0.0f;
+        strum->feedback_ecd = 0.0f;
+        strum->feedback_ecd_last = 0.0f;
+        strum->feedback_ecd_continuous = 0.0f;
+        strum->feedback_round = 0;
+        strum->position_error_ecd = 0.0f;
+        strum->switch_hold_ticks = 0U;
+        strum->block_ticks = 0U;
+        strum->reverse_ticks = 0U;
+        strum->continuous_active = false;
+        strum->single_active = false;
+        strum->single_pending = false;
+        strum->retreat_active = false;
+        strum->current_cmd = 0;
+        shoot_task_strum_speed_pid_clear(strum);
+        shoot_task_send_motor_current(control->fric1.give_current,
+                                      control->fric2.give_current,
+                                      control->fric3.give_current,
+                                      0);
+        return;
+    }
+
+    strum->feedback_ecd = (float)strum_measure->ecd;
+    if (!strum->target_valid)
+    {
+        strum->target_ecd = strum->feedback_ecd;
+        strum->target_cmd_ecd = strum->feedback_ecd;
+        strum->feedback_ecd_last = strum->feedback_ecd;
+        strum->feedback_ecd_continuous = strum->feedback_ecd;
+        strum->feedback_round = 0;
+        strum->target_valid = true;
+    }
+    else
+    {
+        feedback_delta_ecd = (int32_t)strum_measure->ecd - (int32_t)strum->feedback_ecd_last;
+        if (feedback_delta_ecd > 4096)
+        {
+            strum->feedback_round--;
+        }
+        else if (feedback_delta_ecd < -4096)
+        {
+            strum->feedback_round++;
+        }
+
+        strum->feedback_ecd_continuous =
+            (float)strum->feedback_round * 8192.0f + strum->feedback_ecd;
+        strum->feedback_ecd_last = strum->feedback_ecd;
+    }
+
+    current_cmd = 0.0f;
+    long_press_ticks = shoot_task_ms_to_ticks(SHOOT_STRUM_LONG_PRESS_MS);
+    block_ticks = shoot_task_ms_to_ticks(SHOOT_STRUM_BLOCK_TIME_MS);
+    reverse_ticks = shoot_task_ms_to_ticks(SHOOT_STRUM_REVERSE_TIME_MS);
+    retreat_was_active = strum->retreat_active;
+    strum->retreat_active =
+        (control->rc->rc.ch[SHOOT_STRUM_RETREAT_RC_CHANNEL] <= SHOOT_STRUM_RETREAT_RC_THRESHOLD);
+
+    if (strum->retreat_active)
+    {
+        if (!retreat_was_active)
+        {
+            shoot_task_strum_speed_pid_clear(strum);
+        }
+
+        strum->single_pending = false;
+        strum->single_active = false;
+        strum->continuous_active = false;
+        strum->block_ticks = 0U;
+        strum->reverse_ticks = 0U;
+        strum->target_ecd = strum->feedback_ecd_continuous;
+        strum->target_cmd_ecd = strum->feedback_ecd_continuous;
+        strum->position_error_ecd = 0.0f;
+
+        target_speed_rpm = -SHOOT_STRUM_DIRECTION *
+                           SHOOT_STRUM_RETREAT_SPEED_RPM *
+                           SHOOT_STRUM_REDUCTION_RATIO;
+        current_cmd = shoot_task_strum_speed_pid_calc(strum,
+                                                      (float)strum_measure->speed_rpm,
+                                                      target_speed_rpm,
+                                                      -SHOOT_STRUM_DIRECTION * SHOOT_STRUM_RETREAT_FF_CMD);
+    }
+    else if (strum->switch_up)
+    {
+        if (!strum->last_switch_up)
+        {
+            strum->single_pending = strum->last_switch_mid;
+            strum->switch_hold_ticks = 0U;
+            strum->continuous_active = false;
+            strum->single_active = false;
+            strum->retreat_active = false;
+            strum->block_ticks = 0U;
+            strum->reverse_ticks = 0U;
+            shoot_task_strum_speed_pid_clear(strum);
+        }
+
+        if (strum->single_pending && (strum->switch_hold_ticks < 0xFFFFU))
+        {
+            strum->switch_hold_ticks++;
+        }
+
+        if (strum->single_pending && (strum->switch_hold_ticks >= long_press_ticks))
+        {
+            strum->single_pending = false;
+            strum->continuous_active = true;
+            strum->retreat_active = false;
+            shoot_task_strum_speed_pid_clear(strum);
+        }
+
+        if (!strum->continuous_active)
+        {
+            strum->position_error_ecd = 0.0f;
+            shoot_task_strum_speed_pid_clear(strum);
+        }
+        else if (strum->reverse_ticks > 0U)
+        {
+            current_cmd = -SHOOT_STRUM_DIRECTION * SHOOT_STRUM_REVERSE_CMD;
+            strum->reverse_ticks--;
+            shoot_task_strum_speed_pid_clear(strum);
+        }
+        else
+        {
+            target_speed_rpm = SHOOT_STRUM_DIRECTION *
+                               SHOOT_STRUM_CONTINUE_SPEED_RPM *
+                               SHOOT_STRUM_REDUCTION_RATIO;
+            current_cmd = shoot_task_strum_speed_pid_calc(strum,
+                                                          (float)strum_measure->speed_rpm,
+                                                          target_speed_rpm,
+                                                          SHOOT_STRUM_DIRECTION * SHOOT_STRUM_CONTINUE_FF_CMD);
+
+            if ((fabsf((float)strum_measure->speed_rpm) <= SHOOT_STRUM_BLOCK_SPEED_RPM) &&
+                (fabsf((float)strum_measure->given_current) >= (float)SHOOT_STRUM_BLOCK_CURRENT_CMD))
+            {
+                if (strum->block_ticks < block_ticks)
+                {
+                    strum->block_ticks++;
+                }
+            }
+            else
+            {
+                strum->block_ticks = 0U;
+            }
+
+            if (strum->block_ticks >= block_ticks)
+            {
+                strum->reverse_ticks = reverse_ticks;
+                strum->block_ticks = 0U;
+                current_cmd = -SHOOT_STRUM_DIRECTION * SHOOT_STRUM_REVERSE_CMD;
+            }
+        }
+    }
+    else
+    {
+        strum->switch_hold_ticks = 0U;
+        strum->block_ticks = 0U;
+        strum->reverse_ticks = 0U;
+        strum->continuous_active = false;
+        strum->retreat_active = false;
+        shoot_task_strum_speed_pid_clear(strum);
+
+        if (strum->switch_mid && strum->last_switch_up && strum->single_pending)
+        {
+            strum->target_ecd = strum->feedback_ecd_continuous +
+                                SHOOT_STRUM_DIRECTION * SHOOT_STRUM_SINGLE_STEP_ECD;
+            strum->target_cmd_ecd = strum->feedback_ecd_continuous;
+            strum->single_active = true;
+            strum->single_pending = false;
+        }
+
+        if (strum->switch_down)
+        {
+            strum->single_pending = false;
+            strum->single_active = false;
+            strum->target_ecd = strum->feedback_ecd_continuous;
+            strum->target_cmd_ecd = strum->feedback_ecd_continuous;
+        }
+
+        if (strum->single_active)
+        {
+            strum->target_cmd_ecd +=
+                SHOOT_STRUM_TARGET_LPF_ALPHA * (strum->target_ecd - strum->target_cmd_ecd);
+            strum->position_error_ecd =
+                strum->target_cmd_ecd - strum->feedback_ecd_continuous;
+            target_error_ecd = strum->target_ecd - strum->feedback_ecd_continuous;
+            current_cmd = SHOOT_STRUM_CMD_KP * strum->position_error_ecd -
+                          SHOOT_STRUM_CMD_KD * (float)strum_measure->speed_rpm;
+            current_cmd = shoot_task_clamp_float(current_cmd,
+                                                 -SHOOT_STRUM_CMD_MAX,
+                                                 SHOOT_STRUM_CMD_MAX);
+
+            if (fabsf(target_error_ecd) <= SHOOT_STRUM_POS_DEADBAND_ECD)
+            {
+                strum->single_active = false;
+                strum->target_ecd = strum->feedback_ecd_continuous;
+                strum->target_cmd_ecd = strum->feedback_ecd_continuous;
+                strum->position_error_ecd = 0.0f;
+                current_cmd = 0.0f;
+            }
+        }
+        else
+        {
+            strum->position_error_ecd = 0.0f;
+        }
+    }
+
+    strum->last_switch_up = strum->switch_up;
+    strum->last_switch_down = strum->switch_down;
+    strum->last_switch_mid = strum->switch_mid;
+    strum->current_cmd = (int16_t)current_cmd;
+    shoot_task_send_motor_current(control->fric1.give_current,
+                                  control->fric2.give_current,
+                                  control->fric3.give_current,
+                                  strum->current_cmd);
+}
+
+#if 0
 static void shoot_task_control_strum(shoot_task_control_t *control)
 {
     static bool target_valid = false;
@@ -680,6 +958,7 @@ static void shoot_task_control_strum(shoot_task_control_t *control)
                                   shoot_task_current_ma_to_esc_cmd(
                                       shoot_task_current_a_to_current_ma(current_cmd_a)));
 }
+#endif
 
 /**
   * @brief          发送三路摩擦轮和拨弹电流
@@ -705,10 +984,21 @@ static void shoot_task_send_motor_current(int16_t fric1_current,
     data[3] = (uint8_t)fric2_cmd;
     data[4] = (uint8_t)((uint16_t)fric3_cmd >> 8);
     data[5] = (uint8_t)fric3_cmd;
+    data[6] = 0U;
+    data[7] = 0U;
+
+    canx_send_data(&hfdcan2, SHOOT_FRICTION_CMD_ID, data, 8U);
+
+    data[0] = 0U;
+    data[1] = 0U;
+    data[2] = 0U;
+    data[3] = 0U;
+    data[4] = 0U;
+    data[5] = 0U;
     data[6] = (uint8_t)((uint16_t)strum_current_cmd >> 8);
     data[7] = (uint8_t)strum_current_cmd;
 
-    canx_send_data(&hfdcan2, SHOOT_FRICTION_CMD_ID, data, 8U);
+    canx_send_data(&hfdcan1, SHOOT_STRUM_CMD_ID, data, 8U);
 }
 
 static void shoot_task_motor_init(shoot_task_motor_t *motor,
@@ -1255,23 +1545,4 @@ static float shoot_task_clamp_float(float value, float min_value, float max_valu
     return value;
 }
 
-static bool shoot_task_motor_ready(const shoot_task_motor_t *motor, uint32_t now)
-{
-    if (motor == NULL || motor->measure == NULL)
-    {
-        return false;
-    }
-
-    if ((now - motor->measure->last_fdb_time) > SHOOT_FRIC_FDB_TIMEOUT)
-    {
-        return false;
-    }
-
-    if (motor->measure->temperate >= SHOOT_FRIC_TEMP_LIMIT)
-    {
-        return false;
-    }
-
-    return true;
-}
 #endif
